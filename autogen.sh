@@ -7,4 +7,4 @@ aclocal
 autoheader
 automake -a -c
 autoconf
-./configure --enable-maintainer-mode CFLAGS="-Wall -O2 -Wmissing-prototypes -Wstrict-prototypes"
+./configure --enable-maintainer-mode CFLAGS="-Wall -g -O2 -Wmissing-prototypes -Wstrict-prototypes"
