@@ -16,6 +16,7 @@
 #include <config.h>
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <assert.h>
 #include <stdbool.h>
@@ -27,6 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
 /* return if there is some error (oposed to a failes check) */
 #define TESTTOOL_ERROR_EXIT 2
@@ -36,6 +38,7 @@ bool echo = false;
 bool use_debugger = false;
 char *debugger = NULL;
 unsigned char expected_returncode = 0;
+int command_fd = -1;
 
 static void usage(int code) __attribute__ ((noreturn));
 static void usage(int code) {
@@ -73,7 +76,7 @@ static const char **createarguments(int *count, char **args, int argc) {
 		if( debugger == NULL ) {
 			assert(argumentcount > 1);
 			*(p++) = "valgrind";
-			*(p++) = "--log-fd=5";
+			*(p++) = "--log-fd=3";
 			argumentcount -= 2;
 		} else {
 			assert(argumentcount > 0);
@@ -91,23 +94,196 @@ static const char **createarguments(int *count, char **args, int argc) {
 	return results;
 }
 
+static bool readcontroldata(int fd, int *status) {
+	static char buffer[1000];
+	static size_t len = 0;
+	static bool overrun = false;
+	ssize_t got;
+
+	got = read(fd, buffer+len, 1000-len);
+	if( got == 0 ) { /* End of file */
+		return true;
+	}
+	write(2, buffer, got);
+	return false;
+}
+static bool readerrordata(int fd, int *status) {
+	static char buffer[1000];
+	static size_t len = 0;
+	static bool overrun = false;
+	ssize_t got;
+
+	got = read(fd, buffer+len, 1000-len);
+	if( got == 0 ) { /* End of file */
+		return true;
+	}
+	*status = EXIT_FAILURE;
+	write(2, buffer, got);
+	return false;
+}
+static bool readoutdata(int fd, int *status) {
+	static char buffer[1000];
+	static size_t len = 0;
+	static bool overrun = false;
+	ssize_t got;
+
+	got = read(fd, buffer+len, 1000-len);
+	if( got == 0 ) { /* End of file */
+		return true;
+	}
+	write(2, buffer, got);
+	return false;
+}
+
 static int start(const char **arguments) {
 	pid_t child,w;
-	int status = EXIT_SUCCESS;
+	int status;
+	int result = EXIT_SUCCESS;
+	int ofds[2];
+	int efds[2];
+	int cfds[2] = {-1, -1};
+	int e;
+
+	if( pipe(ofds) != 0 ) {
+		fprintf(stderr, "%s: error creating pipe: %s\n",
+				program_invocation_short_name,
+				strerror(errno));
+		return TESTTOOL_ERROR_EXIT;
+	}
+	if( pipe(efds) != 0 ) {
+		fprintf(stderr, "%s: error creating pipe: %s\n",
+				program_invocation_short_name,
+				strerror(errno));
+		return TESTTOOL_ERROR_EXIT;
+	}
+	if( use_debugger && (debugger == NULL || command_fd >= 0) ) {
+		if( pipe(cfds) != 0 ) {
+			fprintf(stderr, "%s: error creating pipe: %s\n",
+					program_invocation_short_name,
+					strerror(errno));
+			return TESTTOOL_ERROR_EXIT;
+		}
+	} else {
+		cfds[1] = open("/dev/null", O_NOCTTY|O_APPEND);
+		if( cfds[1] < 0 ) {
+			fprintf(stderr, "%s: error opening /dev/null: %s\n",
+					program_invocation_short_name,
+					strerror(errno));
+			return TESTTOOL_ERROR_EXIT;
+		}
+	}
 
 	child = fork();
 	if( child == 0 ) {
+		if( cfds[0] > 0 )
+			close(cfds[0]);
+		close(ofds[0]);
+		close(efds[0]);
+		if( ofds[1] >= 0 && ofds[1] != 1 ) {
+			if( dup2(ofds[1],1) == -1 ) {
+				perror("TESTTOOL: error dup'ing pipe: ");
+				raise(SIGUSR2);
+				exit(EXIT_FAILURE);
+			}
+			close(ofds[1]);
+		}
+		if( efds[1] >= 0 && efds[1] != 2 ) {
+			if( dup2(efds[1],2) == -1 ) {
+				perror("TESTTOOL: error dup'ing pipe: ");
+				raise(SIGUSR2);
+				exit(EXIT_FAILURE);
+			}
+			close(efds[1]);
+		}
+		if( command_fd < 0 )
+			command_fd = 3;
+		if( cfds[1] >= 0 && cfds[1] != command_fd ) {
+			if( dup2(cfds[1],command_fd) == -1 ) {
+				perror("TESTTOOL: error dup'ing pipe: ");
+				raise(SIGUSR2);
+				exit(EXIT_FAILURE);
+			}
+			close(cfds[1]);
+		}
 		execvp(arguments[0],(char**)arguments);
 		perror("TESTTOOL: error starting program: ");
 		raise(SIGUSR2);
 		exit(EXIT_FAILURE);
 	}
+	e = errno;
+	close(cfds[1]);
+	close(efds[1]);
+	close(ofds[1]);
 	if( child < 0 ) {
 		fprintf(stderr, "%s: error forking: %s\n",
 				program_invocation_short_name,
-				strerror(errno));
+				strerror(e));
+		if( cfds[0] > 0 )
+			close(cfds[0]);
+		close(efds[0]);
+		close(ofds[0]);
 		return TESTTOOL_ERROR_EXIT;
 	}
+	/* read data */
+	while( true ) {
+		fd_set readfds;
+		int max = cfds[0];
+		FD_ZERO(&readfds);
+		if( cfds[0] > 0 )
+			FD_SET(cfds[0], &readfds);
+		if( efds[0] > 0 )
+			FD_SET(efds[0], &readfds);
+		if( efds[0] > max )
+			max = efds[0];
+		if( ofds[0] > 0 )
+			FD_SET(ofds[0], &readfds);
+		if( ofds[0] > max )
+			max = ofds[0];
+		if( max == -1 )
+			break;
+		e = select(max+1, &readfds, NULL, NULL, NULL);
+		if( e < 0 ) {
+			e = errno;
+			if( e != EINTR ) {
+				if( cfds[0] > 0 )
+					close(cfds[0]);
+				if( efds[0] > 0 )
+					close(efds[0]);
+				if( ofds[0] > 0 )
+					close(ofds[0]);
+				fprintf(stderr, "%s: error waiting for output: %s\n",
+						program_invocation_short_name,
+						strerror(e));
+				return TESTTOOL_ERROR_EXIT;
+			}
+		} else {
+			if( cfds[0] > 0 && FD_ISSET(cfds[0],&readfds) ) {
+				if( readcontroldata(cfds[0], &result) ) {
+					close(cfds[0]);
+					cfds[0] = -1;
+				}
+
+			}
+			if( efds[0] > 0 && FD_ISSET(efds[0],&readfds) ) {
+				if( readerrordata(efds[0], &result) ) {
+					close(efds[0]);
+					efds[0] = -1;
+				}
+			}
+			if( ofds[0] > 0 && FD_ISSET(ofds[0],&readfds) ) {
+				if( readoutdata(ofds[0], &result) ) {
+					close(ofds[0]);
+					ofds[0] = -1;
+				}
+			}
+		}
+	}
+	if( cfds[0] > 0 )
+		close(cfds[0]);
+	if( efds[0] > 0 )
+		close(efds[0]);
+	if( ofds[0] > 0 )
+		close(ofds[0]);
 	w = waitpid(child, &status, 0);
 	if( WIFEXITED(status) ) {
 		if( WEXITSTATUS(status) != expected_returncode ) {
@@ -118,7 +294,7 @@ static int start(const char **arguments) {
 					expected_returncode);
 			return EXIT_FAILURE;
 		} else {
-			return status;
+			return result;
 		}
 	} else if( WIFSIGNALED(status) && WTERMSIG(status) == SIGUSR2) {
 		fprintf(stderr, "%s: Could not start %s\n",
@@ -126,6 +302,12 @@ static int start(const char **arguments) {
 				arguments[0]);
 
 		return TESTTOOL_ERROR_EXIT;
+	} else if( WIFSIGNALED(status) ) {
+		fprintf(stderr, "%s: Program %s killed by signal %d\n",
+				program_invocation_short_name,
+				arguments[0], (int)(WTERMSIG(status)));
+
+		return EXIT_FAILURE;
 	} else {
 		fprintf(stderr, "%s: Abnormal termination of %s\n",
 				program_invocation_short_name,
