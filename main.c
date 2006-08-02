@@ -33,19 +33,24 @@
 /* return if there is some error (oposed to a failes check) */
 #define TESTTOOL_ERROR_EXIT 2
 
-bool silent = false;
-bool echo = false;
-bool annotate = false;
-bool use_debugger = false;
-char *debugger = NULL;
-unsigned char expected_returncode = 0;
-int command_fd = -1;
+static bool silent = false;
+static bool echo = false;
+static bool annotate = false;
+static bool use_debugger = false;
+static bool readrules = false;
+static char *debugger = NULL;
+static unsigned char expected_returncode = 0;
+static int command_fd = -1;
 
 static void usage(int code) __attribute__ ((noreturn));
 static void usage(int code) {
 	printf("%s: run a command and check its output\n",
 		program_invocation_short_name);
 	printf("Syntax: %s [options]"
+			" [--debugger=debugger [debugger options]]"
+			" [--] program [program options]\n",
+		program_invocation_name);
+	printf("or: %s --rules [options]"
 			" [--debugger=debugger [debugger options]]"
 			" [--] program [program options] 3<rules-file\n",
 		program_invocation_name);
@@ -55,6 +60,7 @@ static void usage(int code) {
 	puts("	--silent: only print errors or unexpected events");
 	puts("	--echo: echo commands before executing them");
 	puts("	--annotate: annotate lines (to debug rules)");
+	puts("	--rules: read rules (default from fd 3)");
 	puts("	--debugger: debugger (and its options) start the program in");
 	exit(code);
 }
@@ -99,16 +105,22 @@ static const char **createarguments(int *count, char **args, int argc) {
 static bool readcontroldata(int fd) {
 	static char buffer[1000];
 	static size_t len = 0;
-	static bool overrun = false;
 	ssize_t got;
 
 	got = read(fd, buffer+len, 1000-len);
-	if( got == 0 ) { /* End of file */
+	if( got <= 0 ) { /* End of file */
 		return true;
 	}
 	write(2, buffer, got);
 	return false;
 }
+
+struct linecheck {
+	struct linecheck *next;
+	char *line;
+	size_t found;
+	size_t len;
+};
 
 struct expectdata {
 	bool ignoreunknown;
@@ -123,7 +135,20 @@ struct expectdata {
 
 static void checkline(char *line, size_t len, struct expectdata *expect, int outfd) {
 	bool print = false;;
-	if( expect->ignoreunknown ) {
+	struct linecheck *p;
+	size_t efflen = len;
+	if( len > 0 && line[len-1] == '\n' )
+		efflen--;
+	for( p = expect->ignore; p != NULL ; p = p->next ) {
+		if( efflen == p->len && strncmp(p->line, line, efflen) == 0 ) {
+			p->found++;
+			break;
+		}
+	}
+	if( p != NULL ) {
+		if( annotate && !silent )
+			dprintf(outfd, "IGNORED(%d):", outfd);
+	} else if( expect->ignoreunknown ) {
 		if( annotate && !silent )
 			dprintf(outfd, "NORMAL(%d):", outfd);
 	} else {
@@ -398,6 +423,92 @@ static int start(const char **arguments) {
 	}
 }
 
+static enum {
+	AT_stderr,
+	AT_stdout,
+} addto = AT_stderr;
+
+static bool readruleline(const char *buffer, size_t len) {
+	struct linecheck *n;
+
+	if( len < 0 || buffer[0] == '#' )
+		return true;
+	switch( buffer[0] ) {
+		case 's':
+			if( len > 7 || (len == 7 && buffer[6] != '*')) {
+				fputs("Too long rule starting with s\n",
+						stderr);
+				return false;
+			}
+			if( len >= 6 ) {
+				if( strncmp(buffer, "stderr", 6) == 0 ) {
+					addto = AT_stderr;
+					errorexpect.ignoreunknown = len == 7;
+					return true;
+				} else if( strncmp(buffer, "stdout", 6) == 0 ) {
+					addto = AT_stdout;
+					outexpect.ignoreunknown = len == 7;
+					return true;
+				}
+			}
+			fputs("Unparseable s-rule\n", stderr);
+			return false;
+		case '=':
+			n = calloc(1,sizeof(struct linecheck));
+			if( n == NULL )
+				return false;
+			n->line = strndup(buffer+1, len-1);
+			n->len = len-1;
+			if( addto == AT_stdout ) {
+				n->next = outexpect.ignore;
+				outexpect.ignore = n;
+			} else {
+				n->next = errorexpect.ignore;
+				errorexpect.ignore = n;
+			}
+			return true;
+	}
+	fputs("Unknown rule\n", stderr);
+	return false;
+}
+
+static bool read_rules(void) {
+	char buffer[2000];
+	size_t len = 0;
+	ssize_t got;
+	int fd = (command_fd < 0)?3:command_fd;
+	int linestart = 0;
+	int i;
+
+	while( (got = read(fd, buffer+len, sizeof(buffer)-len)) > 0) {
+
+		for( i = len ; i < len+got ; i++ ) {
+			if( buffer[i] == '\n' || buffer[i] == '\0' ) {
+				if( !readruleline(buffer+linestart,i-linestart))
+					return false;
+				linestart = i+1;
+			}
+		}
+		len += got;
+		if( linestart > 0 ) {
+			len -= linestart;
+			if( len > 0 )
+				memmove(buffer, buffer+linestart, len);
+		}
+	}
+	if( got < 0 ) {
+		fprintf(stderr,
+			"Error reading rules from file-descriptor %d: %s\n",
+			fd, strerror(errno));
+		return false;
+	} else if( len > 0 ) {
+		fprintf(stderr,
+			"Unterminated line at end of rules\n");
+		return false;
+	}
+	return true;
+}
+
 static const struct option longopts[] = {
 	{"debugger",		optional_argument,	NULL,	'd'},
 	{"help",		no_argument,		NULL,	'h'},
@@ -405,6 +516,7 @@ static const struct option longopts[] = {
 	{"silent",		no_argument,		NULL,	's'},
 	{"echo",		no_argument,		NULL,	'e'},
 	{"annotate",		no_argument,		NULL,	'a'},
+	{"rules",		no_argument,		NULL,	'r'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -418,7 +530,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvsead::", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvseard::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -451,6 +563,9 @@ int main(int argc, char *argv[]) {
 			case 'a':
 				annotate = true;
 				break;
+			case 'r':
+				readrules = true;
+				break;
 			default:
 				fprintf(stderr,
 					"%s: Unexpected getopt_long return '%c'!\n",
@@ -462,7 +577,15 @@ int main(int argc, char *argv[]) {
 	if( optind >= argc ) {
 		fprintf(stderr, "%s: no program to start specified!\n",
 				program_invocation_short_name);
+		free(debugger);
 		exit(TESTTOOL_ERROR_EXIT);
+	}
+
+	if( readrules ) {
+		if( !read_rules() ) {
+			free(debugger);
+			exit(TESTTOOL_ERROR_EXIT);
+		}
 	}
 
 	arguments = createarguments(&argumentcount, argv+optind, argc-optind);
