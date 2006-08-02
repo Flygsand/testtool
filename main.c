@@ -35,6 +35,7 @@
 
 bool silent = false;
 bool echo = false;
+bool annotate = false;
 bool use_debugger = false;
 char *debugger = NULL;
 unsigned char expected_returncode = 0;
@@ -53,6 +54,7 @@ static void usage(int code) {
 	puts("	--help: print this screen and exit");
 	puts("	--silent: only print errors or unexpected events");
 	puts("	--echo: echo commands before executing them");
+	puts("	--annotate: annotate lines (to debug rules)");
 	puts("	--debugger: debugger (and its options) start the program in");
 	exit(code);
 }
@@ -94,7 +96,7 @@ static const char **createarguments(int *count, char **args, int argc) {
 	return results;
 }
 
-static bool readcontroldata(int fd, int *status) {
+static bool readcontroldata(int fd) {
 	static char buffer[1000];
 	static size_t len = 0;
 	static bool overrun = false;
@@ -107,31 +109,87 @@ static bool readcontroldata(int fd, int *status) {
 	write(2, buffer, got);
 	return false;
 }
-static bool readerrordata(int fd, int *status) {
-	static char buffer[1000];
-	static size_t len = 0;
-	static bool overrun = false;
-	ssize_t got;
 
-	got = read(fd, buffer+len, 1000-len);
-	if( got == 0 ) { /* End of file */
-		return true;
+struct expectdata {
+	bool ignoreunknown;
+	struct linecheck *ignore;
+	struct linecheck *expect;
+	size_t overlong, unexpected, malformed;
+	char buffer[1000];
+	size_t len;
+	bool overrun;
+} errorexpect = { false, NULL, NULL, 0, 0, 0, "", 0, false},
+  outexpect = { true, NULL, NULL, 0, 0, 0, "", 0, false};
+
+static void checkline(char *line, size_t len, struct expectdata *expect, int outfd) {
+	bool print = false;;
+	if( expect->ignoreunknown ) {
+		if( annotate && !silent )
+			dprintf(outfd, "NORMAL(%d):", outfd);
+	} else {
+		expect->unexpected += 1;
+		print = true;
+		if( annotate )
+			dprintf(outfd, "UNEXPECTED(%d):", outfd);
 	}
-	*status = EXIT_FAILURE;
-	write(2, buffer, got);
-	return false;
+	if( print || !silent ) {
+		write(outfd, line, len);
+		if( line[len-1] != '\n' ) {
+			dprintf(outfd, "[UNTERMINATED/OVERLONG]\n");
+		}
+	} else {
+		if( line[len-1] != '\n' ) {
+			dprintf(outfd, "UNTERMINATED/OVERLONG LINE(%d)\n",
+					outfd);
+		}
+	}
 }
-static bool readoutdata(int fd, int *status) {
-	static char buffer[1000];
-	static size_t len = 0;
-	static bool overrun = false;
-	ssize_t got;
 
-	got = read(fd, buffer+len, 1000-len);
+static bool readlinedata(int fd, struct expectdata *expect, int outfd) {
+	ssize_t got;
+	int i, linestart;
+
+	got = read(fd, expect->buffer+expect->len, sizeof(expect->buffer)-expect->len);
 	if( got == 0 ) { /* End of file */
+		if( expect->len > 0 ) {
+			expect->malformed++;
+			checkline(expect->buffer, expect->len, expect, outfd);
+		}
 		return true;
 	}
-	write(2, buffer, got);
+	if( got < 0 ) {
+		fprintf(stderr, "%s: Error reading data: %s\n",
+				program_invocation_short_name,
+				strerror(errno));
+		return true;
+	}
+	linestart = 0;
+	for( i = expect->len ; i < expect->len+got ; i++ ) {
+		if( expect->buffer[i] == '\n' ) {
+			if( ! expect->overrun )
+				checkline(expect->buffer+linestart, i-linestart+1,
+						expect, outfd);
+			expect->overrun = false;
+			linestart = i+1;
+		}
+		if( expect->buffer[i] == '\0' ) {
+			expect->malformed++;
+			expect->buffer[i] = '0';
+		}
+	}
+	expect->len += got;
+	if( linestart == 0 && expect->len == sizeof(expect->buffer) ) {
+		expect->overrun = true;
+		expect->overlong++;
+		checkline(expect->buffer, expect->len, expect, outfd);
+		expect->len = 0;
+	} else if( linestart == expect->len )
+		expect->len = 0;
+	else {
+		expect->len -= linestart;
+		memmove(expect->buffer, expect->buffer+linestart, expect->len);
+	}
+
 	return false;
 }
 
@@ -258,25 +316,49 @@ static int start(const char **arguments) {
 			}
 		} else {
 			if( cfds[0] > 0 && FD_ISSET(cfds[0],&readfds) ) {
-				if( readcontroldata(cfds[0], &result) ) {
+				if( readcontroldata(cfds[0]) ) {
 					close(cfds[0]);
 					cfds[0] = -1;
 				}
 
 			}
 			if( efds[0] > 0 && FD_ISSET(efds[0],&readfds) ) {
-				if( readerrordata(efds[0], &result) ) {
+				if( readlinedata(efds[0], &errorexpect, 2) ) {
 					close(efds[0]);
 					efds[0] = -1;
 				}
 			}
 			if( ofds[0] > 0 && FD_ISSET(ofds[0],&readfds) ) {
-				if( readoutdata(ofds[0], &result) ) {
+				if( readlinedata(ofds[0], &outexpect, 1) ) {
 					close(ofds[0]);
 					ofds[0] = -1;
 				}
 			}
 		}
+	}
+	if( outexpect.unexpected > 0 || errorexpect.unexpected > 0 ) {
+		fprintf(stderr,
+			"%s: %lu unexpected lines in stdout, %lu in stderr\n",
+			program_invocation_short_name,
+			(unsigned long)outexpect.unexpected,
+			(unsigned long)errorexpect.unexpected);
+		result = EXIT_FAILURE;
+	}
+	if( outexpect.overlong > 0 || errorexpect.overlong > 0 ) {
+		fprintf(stderr,
+			"%s: %lu overlong lines in stdout, %lu in stderr\n",
+			program_invocation_short_name,
+			(unsigned long)outexpect.overlong,
+			(unsigned long)errorexpect.overlong);
+		result = EXIT_FAILURE;
+	}
+	if( outexpect.malformed > 0 || errorexpect.malformed > 0 ) {
+		fprintf(stderr,
+			"%s: %lu text-violations in stdout, %lu in stderr\n",
+			program_invocation_short_name,
+			(unsigned long)outexpect.malformed,
+			(unsigned long)errorexpect.malformed);
+		result = EXIT_FAILURE;
 	}
 	if( cfds[0] > 0 )
 		close(cfds[0]);
@@ -322,6 +404,7 @@ static const struct option longopts[] = {
 	{"version",		no_argument,		NULL,	'v'},
 	{"silent",		no_argument,		NULL,	's'},
 	{"echo",		no_argument,		NULL,	'e'},
+	{"annotate",		no_argument,		NULL,	'a'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -335,7 +418,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvsed:", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvsead::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -364,6 +447,9 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'e':
 				echo = true;
+				break;
+			case 'a':
+				annotate = true;
 				break;
 			default:
 				fprintf(stderr,
