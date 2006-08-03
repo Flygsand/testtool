@@ -39,6 +39,8 @@ static bool annotate = false;
 static bool use_debugger = false;
 static bool readrules = false;
 static char *debugger = NULL;
+static char *outfile = NULL;
+static int outfile_fd = -1;
 static unsigned char expected_returncode = 0;
 static int command_fd = -1;
 
@@ -62,6 +64,7 @@ static void usage(int code) {
 	puts("	--annotate: annotate lines (to debug rules)");
 	puts("	--rules: read rules (default from fd 3)");
 	puts("	--debugger: debugger (and its options) start the program in");
+	puts("	--outfile: file to save stdoutput into");
 	exit(code);
 }
 
@@ -157,6 +160,17 @@ static void checkline(char *line, size_t len, struct expectdata *expect, int out
 		if( annotate )
 			dprintf(outfd, "UNEXPECTED(%d):", outfd);
 	}
+
+	if( outfd == 1 && outfile_fd >= 0 ) {
+		ssize_t written = write(outfile_fd, line, len);
+		if( written != len ) {
+			fprintf(stderr,"%s: Error writing to %s: %s\n",
+				program_invocation_short_name,
+				outfile, strerror(errno));
+			exit(TESTTOOL_ERROR_EXIT);
+		}
+	}
+
 	if( print || !silent ) {
 		write(outfd, line, len);
 		if( line[len-1] != '\n' ) {
@@ -247,7 +261,7 @@ static int start(const char **arguments) {
 			return TESTTOOL_ERROR_EXIT;
 		}
 	} else {
-		cfds[1] = open("/dev/null", O_NOCTTY|O_APPEND);
+		cfds[1] = open("/dev/null", O_NOCTTY|O_APPEND|O_RDONLY);
 		if( cfds[1] < 0 ) {
 			fprintf(stderr, "%s: error opening /dev/null: %s\n",
 					program_invocation_short_name,
@@ -258,6 +272,8 @@ static int start(const char **arguments) {
 
 	child = fork();
 	if( child == 0 ) {
+		/*if( outfile_fd >= 0 )
+			close(outfile_fd);*/
 		if( cfds[0] > 0 )
 			close(cfds[0]);
 		close(ofds[0]);
@@ -517,6 +533,7 @@ static const struct option longopts[] = {
 	{"echo",		no_argument,		NULL,	'e'},
 	{"annotate",		no_argument,		NULL,	'a'},
 	{"rules",		no_argument,		NULL,	'r'},
+	{"outfile",		required_argument,	NULL,	'o'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -530,7 +547,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvseard::", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvsearo:d::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -566,6 +583,14 @@ int main(int argc, char *argv[]) {
 			case 'r':
 				readrules = true;
 				break;
+			case 'o':
+				free(outfile);
+				outfile = strdup(optarg);
+				if( outfile == NULL ) {
+					fputs("Out of memory!\n", stderr);
+					exit(TESTTOOL_ERROR_EXIT);
+				}
+				break;
 			default:
 				fprintf(stderr,
 					"%s: Unexpected getopt_long return '%c'!\n",
@@ -578,12 +603,26 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "%s: no program to start specified!\n",
 				program_invocation_short_name);
 		free(debugger);
+		free(outfile);
 		exit(TESTTOOL_ERROR_EXIT);
 	}
 
 	if( readrules ) {
 		if( !read_rules() ) {
 			free(debugger);
+			free(outfile);
+			exit(TESTTOOL_ERROR_EXIT);
+		}
+	}
+
+	if( outfile != NULL ) {
+		outfile_fd = open(outfile, O_CREAT|O_TRUNC|O_NOFOLLOW|O_WRONLY, 0666);
+		if( outfile_fd < 0 ) {
+			fprintf(stderr,"%s: Error opening file %s: %s\n",
+					program_invocation_short_name,
+					outfile, strerror(errno));
+			free(debugger);
+			free(outfile);
 			exit(TESTTOOL_ERROR_EXIT);
 		}
 	}
@@ -603,7 +642,11 @@ int main(int argc, char *argv[]) {
 
 	status = start(arguments);
 
+	if( outfile_fd >= 0 )
+		close(outfile_fd);
+
 	free(arguments);
 	free(debugger);
+	free(outfile);
 	return status;
 }
