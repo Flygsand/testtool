@@ -446,10 +446,44 @@ static enum {
 
 static bool readruleline(const char *buffer, size_t len) {
 	struct linecheck *n;
+	char *e;
 
-	if( len < 0 || buffer[0] == '#' )
+	if( len <= 0 || buffer[0] == '#' )
 		return true;
 	switch( buffer[0] ) {
+		case 'r':
+			buffer++;len--;
+			if( buffer[0] == 'e' && len > 0) {
+				buffer++;len--;
+				if( buffer[0] == 't' && len > 0) {
+					buffer++;len--;
+					if( buffer[0] == 'u' && len > 0) {
+						buffer++;len--;
+						if( buffer[0] == 'r' && len > 0) {
+							buffer++;len--;
+							if( buffer[0] == 'n' && len > 0) {
+								buffer++;len--;
+								if( buffer[0] == 's' && 
+									len > 0) {
+									buffer++;len--;
+								}
+							}
+						}
+					}
+				}
+			}
+			if( buffer[0] == ' ' && len > 0 ) {
+				buffer++;len--;
+			}
+			expected_returncode = strtol(buffer, &e, 0);
+			while( *e == ' ' || *e == '\t' ) 
+				e++;
+			if( *e != '\0' ) {
+				fputs("Unparsable returns rule\n",
+						stderr);
+				return false;
+			}
+			return true;
 		case 's':
 			if( len > 7 || (len == 7 && buffer[6] != '*')) {
 				fputs("Too long rule starting with s\n",
@@ -500,6 +534,7 @@ static bool read_rules(void) {
 
 		for( i = len ; i < len+got ; i++ ) {
 			if( buffer[i] == '\n' || buffer[i] == '\0' ) {
+				buffer[i] = '\0';
 				if( !readruleline(buffer+linestart,i-linestart))
 					return false;
 				linestart = i+1;
