@@ -556,7 +556,8 @@ static bool readruleline(const char *buffer, size_t len) {
 
 			return true;
 	}
-	fputs("Unknown rule\n", stderr);
+	fprintf(stderr, "%s: Unrecognized rule: %s\n",
+			program_invocation_short_name, buffer);
 	return false;
 }
 
