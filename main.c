@@ -142,7 +142,7 @@ static void checkline(char *line, size_t len, struct expectdata *expect, int out
 	size_t efflen = len;
 	if( len > 0 && line[len-1] == '\n' )
 		efflen--;
-	for( p = expect->ignore; p != NULL ; p = p->next ) {
+	for( p = expect->expect; p != NULL ; p = p->next ) {
 		if( efflen == p->len && strncmp(p->line, line, efflen) == 0 ) {
 			p->found++;
 			break;
@@ -150,15 +150,27 @@ static void checkline(char *line, size_t len, struct expectdata *expect, int out
 	}
 	if( p != NULL ) {
 		if( annotate && !silent )
-			dprintf(outfd, "IGNORED(%d):", outfd);
-	} else if( expect->ignoreunknown ) {
-		if( annotate && !silent )
-			dprintf(outfd, "NORMAL(%d):", outfd);
+			dprintf(outfd, "EXPECTED(%d):", outfd);
 	} else {
-		expect->unexpected += 1;
-		print = true;
-		if( annotate )
-			dprintf(outfd, "UNEXPECTED(%d):", outfd);
+		for( p = expect->ignore; p != NULL ; p = p->next ) {
+			if( efflen == p->len && 
+					strncmp(p->line, line, efflen) == 0 ) {
+				p->found++;
+				break;
+			}
+		}
+		if( p != NULL ) {
+			if( annotate && !silent )
+				dprintf(outfd, "IGNORED(%d):", outfd);
+		} else if( expect->ignoreunknown ) {
+			if( annotate && !silent )
+				dprintf(outfd, "NORMAL(%d):", outfd);
+		} else {
+			expect->unexpected += 1;
+			print = true;
+			if( annotate )
+				dprintf(outfd, "UNEXPECTED(%d):", outfd);
+		}
 	}
 
 	if( outfd == 1 && outfile_fd >= 0 ) {
@@ -240,6 +252,7 @@ static int start(const char **arguments) {
 	int efds[2];
 	int cfds[2] = {-1, -1};
 	int e;
+	struct linecheck *p;
 
 	if( pipe(ofds) != 0 ) {
 		fprintf(stderr, "%s: error creating pipe: %s\n",
@@ -401,6 +414,18 @@ static int start(const char **arguments) {
 			(unsigned long)errorexpect.malformed);
 		result = EXIT_FAILURE;
 	}
+	for( p = errorexpect.expect; p != NULL ; p = p->next ) {
+		if( p->found <= 0 ) {
+			fprintf(stderr, "MISSING(2): %s\n", p->line);
+			result = EXIT_FAILURE;
+		}
+	}
+	for( p = outexpect.expect; p != NULL ; p = p->next ) {
+		if( p->found <= 0 ) {
+			fprintf(stderr, "MISSING(1): %s\n", p->line);
+			result = EXIT_FAILURE;
+		}
+	}
 	if( cfds[0] > 0 )
 		close(cfds[0]);
 	if( efds[0] > 0 )
@@ -446,10 +471,16 @@ static enum {
 
 static bool readruleline(const char *buffer, size_t len) {
 	struct linecheck *n;
+	struct linecheck **next;
 	char *e;
 
 	if( len <= 0 || buffer[0] == '#' )
 		return true;
+
+	if( addto == AT_stdout )
+		next = &outexpect.ignore;
+	else
+		next = &errorexpect.ignore;
 	switch( buffer[0] ) {
 		case 'r':
 			buffer++;len--;
@@ -503,19 +534,24 @@ static bool readruleline(const char *buffer, size_t len) {
 			}
 			fputs("Unparseable s-rule\n", stderr);
 			return false;
+		case '*':
+			buffer++;len--;
+			if( addto == AT_stdout )
+				next = &outexpect.expect;
+			else
+				next = &errorexpect.expect;
+			assert(buffer[0] == '=');
 		case '=':
+			buffer++;len--;
 			n = calloc(1,sizeof(struct linecheck));
 			if( n == NULL )
 				return false;
-			n->line = strndup(buffer+1, len-1);
-			n->len = len-1;
-			if( addto == AT_stdout ) {
-				n->next = outexpect.ignore;
-				outexpect.ignore = n;
-			} else {
-				n->next = errorexpect.ignore;
-				errorexpect.ignore = n;
-			}
+			n->line = strndup(buffer, len);
+			assert( n->line != NULL);
+			n->len = len;
+			n->next = *next;
+			*next = n;
+
 			return true;
 	}
 	fputs("Unknown rule\n", stderr);
