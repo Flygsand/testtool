@@ -416,13 +416,15 @@ static int start(const char **arguments) {
 	}
 	for( p = errorexpect.expect; p != NULL ; p = p->next ) {
 		if( p->found <= 0 ) {
-			fprintf(stderr, "MISSING(2): %s\n", p->line);
+			fprintf(stderr, "%s: missed expected line(2): %s\n",
+				program_invocation_short_name, p->line);
 			result = EXIT_FAILURE;
 		}
 	}
 	for( p = outexpect.expect; p != NULL ; p = p->next ) {
 		if( p->found <= 0 ) {
-			fprintf(stderr, "MISSING(1): %s\n", p->line);
+			fprintf(stderr, "%s: missed expected line(1): %s\n",
+				program_invocation_short_name, p->line);
 			result = EXIT_FAILURE;
 		}
 	}
