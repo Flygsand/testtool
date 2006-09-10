@@ -105,16 +105,82 @@ static const char **createarguments(int *count, char **args, int argc) {
 	return results;
 }
 
-static bool readcontroldata(int fd) {
+static bool controlline(char *line, size_t len, int *result, pid_t child) {
+	char *p = line;
+	pid_t pid = 0;
+	if( *(p++) != '=' || *(p++) != '=' )
+		return true;
+	while( *p >= '0' && *p <= '9' ) {
+		pid = pid*10 + (*p - '0');
+		p++;
+	}
+	if( *(p++) != '=' || *(p++) != '=' || *(p++) != ' ' )
+		return true;
+	/* do not want to see them again and again... */
+	if( strncmp(p, "Memcheck,", 9) == 0 )
+		return false;
+	if( strncmp(p, "Copyright", 9) == 0 )
+		return false;
+	if( strncmp(p, "Using ", 6) == 0 )
+		return false;
+	if( strncmp(p, "For more details ", 16) == 0 )
+		return false;
+	if( pid == child && strncmp(p, "   definitely lost: ", 20) == 0 ) {
+		if( p[20] != '0' ) {
+			*result = EXIT_FAILURE;
+			return true;
+		}
+	}
+	if( strncmp(p, "ERROR SUMMARY: ", 15) == 0 ) {
+		if( p[15] != '0' ) {
+			*result = EXIT_FAILURE;
+			return true;
+		}
+	}
+	return true;	
+}
+
+static bool readcontroldata(int fd, int *result, pid_t child) {
 	static char buffer[1000];
 	static size_t len = 0;
+	size_t overrun = false;
 	ssize_t got;
+	size_t i,linestart;
 
 	got = read(fd, buffer+len, 1000-len);
-	if( got <= 0 ) { /* End of file */
+	if( got < 0 ) {
+		fprintf(stderr, "%s: Error reading from helper: %s\n",
+				program_invocation_short_name,
+				strerror(errno));
+		return true;
+	} else if( got == 0 ) { /* End of file */
 		return true;
 	}
-	write(2, buffer, got);
+
+	linestart = 0;
+	for( i = len ; i < len+got ; i++ ) {
+		if( buffer[i] == '\n' || buffer[i] == '\0' ) {
+			if( !overrun &&	controlline(buffer+linestart, i-linestart+1,
+						result, child) )
+				write(2, buffer, got);
+
+			overrun = false;
+			linestart = i+1;
+		}
+	}
+	len += got;
+	if( linestart == 0 && len == sizeof(buffer) ) {
+		overrun = true;
+		write(2, buffer, got);
+		write(2, "[...]\n", 6);
+		len = 0;
+	} else if( linestart == len )
+		len = 0;
+	else {
+		len -= linestart;
+		memmove(buffer, buffer+linestart, len);
+	}
+
 	return false;
 }
 
@@ -370,7 +436,7 @@ static int start(const char **arguments) {
 			}
 		} else {
 			if( cfds[0] > 0 && FD_ISSET(cfds[0],&readfds) ) {
-				if( readcontroldata(cfds[0]) ) {
+				if( readcontroldata(cfds[0], &result, child) ) {
 					close(cfds[0]);
 					cfds[0] = -1;
 				}
