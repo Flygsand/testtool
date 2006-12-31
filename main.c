@@ -131,6 +131,12 @@ static bool controlline(char *line, size_t len, int *result, pid_t child) {
 			return true;
 		}
 	}
+	if( pid == child && strncmp(p, "     possibly lost: ", 20) == 0 ) {
+		if( p[20] != '0' ) {
+			*result = EXIT_FAILURE;
+			return true;
+		}
+	}
 	if( strncmp(p, "ERROR SUMMARY: ", 15) == 0 ) {
 		if( p[15] != '0' ) {
 			*result = EXIT_FAILURE;
