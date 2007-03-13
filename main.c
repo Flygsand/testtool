@@ -17,6 +17,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <limits.h>
 #include <signal.h>
 #include <assert.h>
 #include <stdbool.h>
@@ -30,7 +31,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 
-/* return if there is some error (oposed to a failes check) */
+/* return if there is some error (opposed to a failed check) */
 #define TESTTOOL_ERROR_EXIT 2
 
 static bool silent = false;
@@ -43,6 +44,7 @@ static char *outfile = NULL;
 static int outfile_fd = -1;
 static unsigned char expected_returncode = 0;
 static int command_fd = -1;
+static int variables['z'-'a'+2] = { INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX};
 
 static void usage(int code) __attribute__ ((noreturn));
 static void usage(int code) {
@@ -65,6 +67,7 @@ static void usage(int code) {
 	puts("	--rules: read rules (default from fd 3)");
 	puts("	--debugger: debugger (and its options) start the program in");
 	puts("	--outfile: file to save stdoutput into");
+	puts("	--variable C=N: set variable for conditional rules");
 	exit(code);
 }
 
@@ -143,7 +146,7 @@ static bool controlline(char *line, size_t len, int *result, pid_t child) {
 			return true;
 		}
 	}
-	return true;	
+	return true;
 }
 
 static bool readcontroldata(int fd, int *result, pid_t child) {
@@ -195,6 +198,8 @@ struct linecheck {
 	char *line;
 	size_t found;
 	size_t len;
+	int varlimit;
+	char variable;
 };
 
 struct expectdata {
@@ -215,7 +220,8 @@ static void checkline(char *line, size_t len, struct expectdata *expect, int out
 	if( len > 0 && line[len-1] == '\n' )
 		efflen--;
 	for( p = expect->expect; p != NULL ; p = p->next ) {
-		if( efflen == p->len && strncmp(p->line, line, efflen) == 0 ) {
+		if( efflen == p->len && variables[p->variable] >= p->varlimit &&
+				        strncmp(p->line, line, efflen) == 0 ) {
 			p->found++;
 			break;
 		}
@@ -487,14 +493,14 @@ static int start(const char **arguments) {
 		result = EXIT_FAILURE;
 	}
 	for( p = errorexpect.expect; p != NULL ; p = p->next ) {
-		if( p->found <= 0 ) {
+		if( p->found <= 0 && variables[p->variable] >= p->varlimit ) {
 			fprintf(stderr, "%s: missed expected line(2): %s\n",
 				program_invocation_short_name, p->line);
 			result = EXIT_FAILURE;
 		}
 	}
 	for( p = outexpect.expect; p != NULL ; p = p->next ) {
-		if( p->found <= 0 ) {
+		if( p->found <= 0 && variables[p->variable] >= p->varlimit ) {
 			fprintf(stderr, "%s: missed expected line(1): %s\n",
 				program_invocation_short_name, p->line);
 			result = EXIT_FAILURE;
@@ -547,6 +553,8 @@ static bool readruleline(const char *buffer, size_t len) {
 	struct linecheck *n;
 	struct linecheck **next;
 	char *e;
+	char variable = 0;
+	int limit = INT_MIN;
 
 	if( len <= 0 || buffer[0] == '#' )
 		return true;
@@ -608,25 +616,51 @@ static bool readruleline(const char *buffer, size_t len) {
 			}
 			fputs("Unparseable s-rule\n", stderr);
 			return false;
-		case '*':
+	};
+	if( buffer[0] == '-') {
+		int sign;
+		buffer++;len--;
+		if( len <= 0 || buffer[0] < 'a' || buffer[0] > 'z' ) {
+			fputs("'-' rule missing variable name\n",
+					stderr);
+		}
+		variable = buffer[0] - 'a' + 1;
+		buffer++;len--;
+		/* read limit for this variable */
+		if( len > 0 && buffer[0] == '-' ) {
+			sign = -1;
 			buffer++;len--;
-			if( addto == AT_stdout )
-				next = &outexpect.expect;
-			else
-				next = &errorexpect.expect;
-			assert(buffer[0] == '=');
-		case '=':
+		} else
+			sign = 1;
+		limit = 0;
+		while( len > 0 && buffer[0] >= '0' && buffer[0] <= '9' ) {
+			limit = 10*limit + (buffer[0]-'0');
 			buffer++;len--;
-			n = calloc(1,sizeof(struct linecheck));
-			if( n == NULL )
-				return false;
-			n->line = strndup(buffer, len);
-			assert( n->line != NULL);
-			n->len = len;
-			n->next = *next;
-			*next = n;
+		}
+		limit *= sign;
+	}
+	if( len > 0 && buffer[0] == '*') {
+		buffer++;len--;
+		if( addto == AT_stdout )
+			next = &outexpect.expect;
+		else
+			next = &errorexpect.expect;
+		assert(buffer[0] == '=');
+	}
+	if( len > 0 && buffer[0] == '=') {
+		buffer++;len--;
+		n = calloc(1,sizeof(struct linecheck));
+		if( n == NULL )
+			return false;
+		n->variable = variable;
+		n->varlimit = limit;
+		n->line = strndup(buffer, len);
+		assert( n->line != NULL);
+		n->len = len;
+		n->next = *next;
+		*next = n;
 
-			return true;
+		return true;
 	}
 	fprintf(stderr, "%s: Unrecognized rule: %s\n",
 			program_invocation_short_name, buffer);
@@ -680,6 +714,7 @@ static const struct option longopts[] = {
 	{"annotate",		no_argument,		NULL,	'a'},
 	{"rules",		no_argument,		NULL,	'r'},
 	{"outfile",		required_argument,	NULL,	'o'},
+	{"variable",		required_argument,	NULL,	'D'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -693,7 +728,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvsearo:d::", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvsearD:o:d::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -736,6 +771,21 @@ int main(int argc, char *argv[]) {
 					fputs("Out of memory!\n", stderr);
 					exit(TESTTOOL_ERROR_EXIT);
 				}
+				break;
+			case 'D':
+				if( optarg[0] < 'a' || optarg[0] > 'z' ) {
+					fprintf(stderr,
+							"%s: No variable-name found in '%s'!\n",
+							program_invocation_short_name, optarg);
+					exit(TESTTOOL_ERROR_EXIT);
+				}
+				if( optarg[1] != '=' ) {
+					fprintf(stderr,
+							"%s: Missing '=' in '%s'!\n",
+							program_invocation_short_name, optarg);
+					exit(TESTTOOL_ERROR_EXIT);
+				}
+				variables[optarg[0]-'a'+1] = atoi(optarg+2);
 				break;
 			default:
 				fprintf(stderr,
