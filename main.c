@@ -68,6 +68,7 @@ static void usage(int code) {
 	puts("	--debugger: debugger (and its options) start the program in");
 	puts("	--outfile: file to save stdoutput into");
 	puts("	--variable C=N: set variable for conditional rules");
+	puts("	--checkout: do not ignore unknown stdout data");
 	exit(code);
 }
 
@@ -715,6 +716,7 @@ static const struct option longopts[] = {
 	{"rules",		no_argument,		NULL,	'r'},
 	{"outfile",		required_argument,	NULL,	'o'},
 	{"variable",		required_argument,	NULL,	'D'},
+	{"checkstdout",		no_argument,		NULL,	'C'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -728,7 +730,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvsearD:o:d::", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvsearCD:o:d::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -771,6 +773,9 @@ int main(int argc, char *argv[]) {
 					fputs("Out of memory!\n", stderr);
 					exit(TESTTOOL_ERROR_EXIT);
 				}
+				break;
+			case 'C':
+				outexpect.ignoreunknown = false;
 				break;
 			case 'D':
 				if( optarg[0] < 'a' || optarg[0] > 'z' ) {
