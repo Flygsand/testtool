@@ -691,6 +691,7 @@ static bool read_rules(void) {
 			len -= linestart;
 			if( len > 0 )
 				memmove(buffer, buffer+linestart, len);
+			linestart = 0;
 		}
 	}
 	if( got < 0 ) {
