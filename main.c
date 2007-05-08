@@ -151,7 +151,7 @@ static bool controlline(char *line, size_t len, int *result, pid_t child) {
 }
 
 static bool readcontroldata(int fd, int *result, pid_t child) {
-	static char buffer[1000];
+	static char buffer[10000];
 	static size_t len = 0;
 	size_t overrun = false;
 	ssize_t got;
@@ -172,7 +172,7 @@ static bool readcontroldata(int fd, int *result, pid_t child) {
 		if( buffer[i] == '\n' || buffer[i] == '\0' ) {
 			if( !overrun &&	controlline(buffer+linestart, i-linestart+1,
 						result, child) )
-				write(2, buffer, got);
+				write(2, buffer+linestart, i-linestart+1);
 
 			overrun = false;
 			linestart = i+1;
@@ -208,7 +208,7 @@ struct expectdata {
 	struct linecheck *ignore;
 	struct linecheck *expect;
 	size_t overlong, unexpected, malformed;
-	char buffer[1000];
+	char buffer[10000];
 	size_t len;
 	bool overrun;
 } errorexpect = { false, NULL, NULL, 0, 0, 0, "", 0, false},
