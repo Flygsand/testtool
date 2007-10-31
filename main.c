@@ -39,6 +39,7 @@ static bool echo = false;
 static bool annotate = false;
 static bool use_debugger = false;
 static bool readrules = false;
+static bool ignoreunexpected = false;
 static char *debugger = NULL;
 static char *outfile = NULL;
 static int outfile_fd = -1;
@@ -475,7 +476,8 @@ static int start(const char **arguments) {
 			program_invocation_short_name,
 			(unsigned long)outexpect.unexpected,
 			(unsigned long)errorexpect.unexpected);
-		result = EXIT_FAILURE;
+		if( !ignoreunexpected )
+			result = EXIT_FAILURE;
 	}
 	if( outexpect.overlong > 0 || errorexpect.overlong > 0 ) {
 		fprintf(stderr,
@@ -718,6 +720,7 @@ static const struct option longopts[] = {
 	{"outfile",		required_argument,	NULL,	'o'},
 	{"variable",		required_argument,	NULL,	'D'},
 	{"checkstdout",		no_argument,		NULL,	'C'},
+	{"ignoreunexpected",	no_argument,		NULL,	'i'},
 	{NULL,			0,			NULL,	0}
 };
 
@@ -731,7 +734,7 @@ int main(int argc, char *argv[]) {
 		usage(TESTTOOL_ERROR_EXIT);
 
 	opterr = 0;
-	while( (c = getopt_long(argc, argv, "+hvsearCD:o:d::", longopts, NULL)) != -1 ) {
+	while( (c = getopt_long(argc, argv, "+hvseariCD:o:d::", longopts, NULL)) != -1 ) {
 		if( c == 'd' ) {
 			use_debugger = true;
 			if( optarg != NULL ) {
@@ -777,6 +780,9 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'C':
 				outexpect.ignoreunknown = false;
+				break;
+			case 'i':
+				ignoreunexpected = true;
 				break;
 			case 'D':
 				if( optarg[0] < 'a' || optarg[0] > 'z' ) {
