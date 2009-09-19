@@ -6,7 +6,10 @@ testtool_SOURCES = main.c
 
 # noinst_HEADERS =
 
-MAINTAINERCLEANFILES = Makefile.in configure install-sh stamp-h.in aclocal.m4 config.h.in mkinstalldirs config.guess config.sub missing
+MAINTAINERCLEANFILES = $(srcdir)/Makefile.in $(srcdir)/configure $(srcdir)/stamp-h.in $(srcdir)/aclocal.m4 $(srcdir)/config.h.in $(srcdir)/config.h.in~
 
 maintainer-clean-local:
+	-rm -rf $(srcdir)/ac
+
+distclean-local:
 	-rm -rf autom4te.cache
