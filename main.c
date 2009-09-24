@@ -201,7 +201,7 @@ struct linecheck {
 	size_t found;
 	size_t len;
 	int varlimit;
-	char variable;
+	unsigned char variable;
 };
 
 struct expectdata {
@@ -255,7 +255,7 @@ static void checkline(char *line, size_t len, struct expectdata *expect, int out
 
 	if( outfd == 1 && outfile_fd >= 0 ) {
 		ssize_t written = write(outfile_fd, line, len);
-		if( written != len ) {
+		if( written != (ssize_t)len ) {
 			fprintf(stderr,"%s: Error writing to %s: %s\n",
 				program_invocation_short_name,
 				outfile, strerror(errno));
@@ -295,7 +295,7 @@ static bool readlinedata(int fd, struct expectdata *expect, int outfd) {
 		return true;
 	}
 	linestart = 0;
-	for( i = expect->len ; i < expect->len+got ; i++ ) {
+	for( i = expect->len ; i < (int)(expect->len+got) ; i++ ) {
 		if( expect->buffer[i] == '\n' ) {
 			if( ! expect->overrun )
 				checkline(expect->buffer+linestart, i-linestart+1,
@@ -314,7 +314,7 @@ static bool readlinedata(int fd, struct expectdata *expect, int outfd) {
 		expect->overlong++;
 		checkline(expect->buffer, expect->len, expect, outfd);
 		expect->len = 0;
-	} else if( linestart == expect->len )
+	} else if( linestart == (int)expect->len )
 		expect->len = 0;
 	else {
 		expect->len -= linestart;
@@ -680,7 +680,7 @@ static bool read_rules(void) {
 
 	while( (got = read(fd, buffer+len, sizeof(buffer)-len)) > 0) {
 
-		for( i = len ; i < len+got ; i++ ) {
+		for( i = len ; i < (int)(len+got) ; i++ ) {
 			if( buffer[i] == '\n' || buffer[i] == '\0' ) {
 				buffer[i] = '\0';
 				if( !readruleline(buffer+linestart,i-linestart))
