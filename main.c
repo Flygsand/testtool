@@ -25,7 +25,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <getopt.h>
-#include <malloc.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -46,6 +45,15 @@ static int outfile_fd = -1;
 static unsigned char expected_returncode = 0;
 static int command_fd = -1;
 static int variables['z'-'a'+2] = { INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX,INT_MAX};
+
+#if !(HAVE_DECL_PROGRAM_INVOCATION_NAME)
+static char *program_invocation_name = NULL;
+#endif
+
+#if !(HAVE_DECL_PROGRAM_INVOCATION_SHORT_NAME)
+#include <libgen.h>
+static char *program_invocation_short_name = NULL;
+#endif
 
 static void usage(int code) __attribute__ ((noreturn));
 static void usage(int code) {
@@ -729,6 +737,14 @@ int main(int argc, char *argv[]) {
 	const char **arguments;
 	int argumentcount;
 	int status;
+
+	#if !(HAVE_DECL_PROGRAM_INVOCATION_NAME)
+	program_invocation_name = argv[0];
+	#endif
+
+	#if !(HAVE_DECL_PROGRAM_INVOCATION_SHORT_NAME)
+	program_invocation_short_name = basename(argv[0]);
+	#endif
 
 	if( argc <= 1 )
 		usage(TESTTOOL_ERROR_EXIT);
